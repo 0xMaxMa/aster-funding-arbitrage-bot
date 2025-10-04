@@ -98,11 +98,32 @@ export class FuturesAPI {
           return null;
         }
 
+        const positionAmt = parseFloat(position.positionAmt);
+        const entryPrice = parseFloat(position.entryPrice);
+        const markPrice = parseFloat(position.markPrice);
+        const notionalValue = parseFloat(position.notional || 0);
+
+        // Binance returns positionAmt differently based on contract type:
+        // - For some pairs: positionAmt = notional value in USDT
+        // - For others: positionAmt = quantity in base asset
+        // We detect by checking if notional field exists and differs from positionAmt
+        let quantity;
+        if (notionalValue !== 0 && Math.abs(notionalValue) !== Math.abs(positionAmt)) {
+          // Use notional value and convert to quantity
+          quantity = Math.abs(notionalValue / markPrice);
+        } else if (Math.abs(positionAmt * markPrice) > Math.abs(positionAmt) * 10) {
+          // positionAmt seems to be notional (much larger than expected quantity)
+          quantity = Math.abs(positionAmt / markPrice);
+        } else {
+          // positionAmt is already quantity
+          quantity = Math.abs(positionAmt);
+        }
+
         return {
           symbol: position.symbol,
-          positionAmt: parseFloat(position.positionAmt),
-          entryPrice: parseFloat(position.entryPrice),
-          markPrice: parseFloat(position.markPrice),
+          positionAmt: positionAmt < 0 ? -quantity : quantity,
+          entryPrice: entryPrice,
+          markPrice: markPrice,
           unRealizedProfit: parseFloat(position.unRealizedProfit)
         };
       }

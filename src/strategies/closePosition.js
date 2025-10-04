@@ -91,21 +91,21 @@ export class ClosePositionStrategy {
     }
 
     const currentPrice = await this.futuresAPI.getPrice(symbol);
-    const initialFuturesValue = initialFuturesQty * currentPrice;
+    const initialFuturesNotional = initialFuturesQty * currentPrice;
     const initialSpotValue = initialSpotQty * currentPrice;
 
     console.log(`\n📈 Initial Positions:`);
-    console.log(`   Futures SHORT: ${initialFuturesQty.toFixed(8)} (~$${initialFuturesValue.toFixed(2)} USD)`);
-    console.log(`   Spot LONG: ${initialSpotQty.toFixed(8)} (~$${initialSpotValue.toFixed(2)} USD)`);
-    console.log(`   Total Value: ~$${(initialFuturesValue + initialSpotValue).toFixed(2)} USD\n`);
+    console.log(`   Futures SHORT: ${initialFuturesQty.toFixed(8)} (notional: $${initialFuturesNotional.toFixed(2)})`);
+    console.log(`   Spot LONG: ${initialSpotQty.toFixed(8)} (value: $${initialSpotValue.toFixed(2)})`);
+    console.log(`   Position Imbalance: ${Math.abs(initialFuturesQty - initialSpotQty).toFixed(8)} coins\n`);
 
     // Calculate target quantities to close
     const targetFuturesQty = initialFuturesQty * (closePercentage / 100);
     const targetSpotQty = initialSpotQty * (closePercentage / 100);
 
     console.log(`🎯 Target to close (${closePercentage}%):`);
-    console.log(`   Futures: $${targetFuturesQty.toFixed(8)}`);
-    console.log(`   Spot: $${targetSpotQty.toFixed(8)}\n`);
+    console.log(`   Futures: ${targetFuturesQty.toFixed(8)}`);
+    console.log(`   Spot: ${targetSpotQty.toFixed(8)}\n`);
 
     const results = [];
     let remainingFuturesQty = targetFuturesQty;
