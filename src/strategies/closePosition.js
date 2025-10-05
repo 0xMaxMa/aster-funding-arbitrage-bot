@@ -63,6 +63,27 @@ export class ClosePositionStrategy {
     return results;
   }
 
+  async getPositionsWithRetry(symbol, baseAsset, maxRetries = 10) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const [futuresPosition, spotBalance] = await Promise.all([
+          this.futuresAPI.getPosition(symbol),
+          this.spotAPI.getBalance(baseAsset)
+        ]);
+        return [futuresPosition, spotBalance];
+      } catch (error) {
+        console.error(`\n⚠️  Attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+        if (attempt < maxRetries) {
+          const waitTime = this.retryDelayMs * attempt;
+          console.log(`   Retrying in ${waitTime}ms...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        } else {
+          throw error;
+        }
+      }
+    }
+  }
+
   async execute(symbol, closePercentage, lotSizePercent) {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🔴 CLOSING FUNDING RATE ARBITRAGE POSITION`);
@@ -78,10 +99,7 @@ export class ClosePositionStrategy {
 
     // Get initial positions
     console.log(`📊 Fetching current positions...`);
-    const [initialFuturesPosition, initialSpotBalance] = await Promise.all([
-      this.futuresAPI.getPosition(symbol),
-      this.spotAPI.getBalance(baseAsset)
-    ]);
+    const [initialFuturesPosition, initialSpotBalance] = await this.getPositionsWithRetry(symbol, baseAsset);
 
     const initialFuturesQty = initialFuturesPosition ? Math.abs(initialFuturesPosition.positionAmt) : 0;
     const initialSpotQty = initialSpotBalance ? initialSpotBalance.free : 0;
@@ -108,8 +126,6 @@ export class ClosePositionStrategy {
     console.log(`   Spot: ${targetSpotQty.toFixed(8)}\n`);
 
     const results = [];
-    let remainingFuturesQty = targetFuturesQty;
-    let remainingSpotQty = targetSpotQty;
     let totalFuturesQty = 0;
     let totalSpotQty = 0;
     let totalFuturesValue = 0;
@@ -119,18 +135,31 @@ export class ClosePositionStrategy {
     const totalLots = Math.ceil(closePercentage / lotSizePercent);
     let currentLot = 0;
 
-    while ((remainingFuturesQty > 0.00000001 || remainingSpotQty > 0.00000001) && currentLot < totalLots) {
+    while (currentLot < totalLots) {
       currentLot++;
 
-      // Calculate quantity for this lot based on percentage
-      let lotFuturesQty = targetFuturesQty * (lotSizePercent / closePercentage);
-      let lotSpotQty = targetSpotQty * (lotSizePercent / closePercentage);
+      // Fetch current positions and price for this lot
+      const [currentFuturesPosition, currentSpotBalance] = await this.getPositionsWithRetry(symbol, baseAsset);
+
+      const remainingFuturesQty = currentFuturesPosition ? Math.abs(currentFuturesPosition.positionAmt) : 0;
+      const remainingSpotQty = currentSpotBalance ? currentSpotBalance.free : 0;
+
+      // Break if no more position to close
+      if (remainingFuturesQty < 0.00000001 && remainingSpotQty < 0.00000001) {
+        console.log(`\n✅ All positions closed`);
+        break;
+      }
+
+      const currentPrice = await this.futuresAPI.getPrice(symbol);
+
+      // Calculate lot size as percentage of REMAINING position
+      const lotPercentOfRemaining = lotSizePercent / (100 - (currentLot - 1) * lotSizePercent);
+      let lotFuturesQty = remainingFuturesQty * lotPercentOfRemaining;
+      let lotSpotQty = remainingSpotQty * lotPercentOfRemaining;
 
       // If this is not the last lot, check if next lot will be too small
       const nextRemainingFuturesQty = remainingFuturesQty - lotFuturesQty;
       const nextRemainingSpotQty = remainingSpotQty - lotSpotQty;
-
-      const currentPrice = await this.futuresAPI.getPrice(symbol);
       const nextRemainingUSD = Math.min(
         nextRemainingFuturesQty * currentPrice,
         nextRemainingSpotQty * currentPrice
@@ -158,8 +187,7 @@ export class ClosePositionStrategy {
 
         // If this is the first lot and both are below $5, suggest increasing lot size
         if (currentLot === 1 && lotFuturesValueUSD < 5 && lotSpotValueUSD < 5) {
-          const totalValueUSD = (initialFuturesValue + initialSpotValue);
-          const suggestedLotPercent = Math.ceil((5 / Math.min(initialFuturesValue, initialSpotValue)) * 100);
+          const suggestedLotPercent = Math.ceil((5 / Math.min(initialFuturesNotional, initialSpotValue)) * 100 * (100 / closePercentage));
 
           throw new Error(
             `Lot size too small. Each lot must be at least $5 USD on each side.\n` +
@@ -211,9 +239,6 @@ export class ClosePositionStrategy {
 
         results.push(result);
 
-        remainingFuturesQty -= result.futures.executedQty;
-        remainingSpotQty -= result.spot.executedQty;
-
         totalFuturesQty += result.futures.executedQty;
         totalSpotQty += result.spot.executedQty;
         totalFuturesValue += futuresValueExecuted;
@@ -221,9 +246,8 @@ export class ClosePositionStrategy {
 
         console.log(`✓ Futures CLOSE SHORT: ${result.futures.executedQty.toFixed(8)} @ $${result.futures.price.toFixed(6)} = $${futuresValueExecuted.toFixed(2)}`);
         console.log(`✓ Spot SELL: ${result.spot.executedQty.toFixed(8)} @ $${result.spot.price.toFixed(6)} = $${spotValueExecuted.toFixed(2)}`);
-        console.log(`Remaining: Futures ${remainingFuturesQty.toFixed(8)} | Spot ${remainingSpotQty.toFixed(8)}`);
 
-        if (remainingFuturesQty > 0.00000001 || remainingSpotQty > 0.00000001) {
+        if (currentLot < totalLots) {
           console.log(`\nWaiting ${this.retryDelayMs}ms before next lot...`);
           await new Promise(resolve => setTimeout(resolve, this.retryDelayMs));
         }
